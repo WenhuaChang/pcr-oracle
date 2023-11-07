@@ -20,6 +20,8 @@
 
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
+#include <tss2_mu.h>
+#include "util.h"
 #include "tpm2key-asn.h"
 
 bool	tpm2key_basekey(TSSPRIVKEY **tpm2key, const TPM2_HANDLE parent,

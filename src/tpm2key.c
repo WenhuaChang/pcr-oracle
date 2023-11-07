@@ -15,13 +15,9 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
-#include <openssl/asn1.h>
-#include <openssl/bio.h>
-#include <tss2_mu.h>
-
 #include "bufparser.h"
 #include "tpm2key-asn.h"
-#include "util.h"
+#include "tpm2key.h"
 
 bool
 tpm2key_basekey(TSSPRIVKEY **tpm2key, const TPM2_HANDLE parent,
@@ -233,7 +229,7 @@ error:
 }
 
 bool
-tpm2key_write_file(const char *path, TSSPRIVKEY *tpm2key)
+tpm2key_write_file(const char *path, const TSSPRIVKEY *tpm2key)
 {
 	buffer_t write_buf;
 	unsigned char *der_buf = NULL;
