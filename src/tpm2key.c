@@ -94,6 +94,38 @@ __policy_add_policypcr(STACK_OF(TSSOPTPOLICY) *policy_seq, const TPML_PCR_SELECT
 }
 
 static bool
+__policy_add_policynv(STACK_OF(TSSOPTPOLICY) *policy_seq,
+		      TPM2_HANDLE nvindex,
+		      const TPM2B_OPERAND *operand)
+{
+	TSSOPTPOLICY *policy;
+	buffer_t *bp;
+	TPM2_RC rc;
+
+	policy = TSSOPTPOLICY_new();
+	if (policy == NULL)
+		return false;
+
+	bp = buffer_alloc_write(sizeof(nvindex) + sizeof(*operand));
+	if (bp == NULL)
+		return false;
+
+	rc = Tss2_MU_TPM2_HANDLE_Marshal(nvindex, bp->data, sizeof(nvindex), &bp->wpos);
+	if (rc != TSS2_RC_SUCCESS)
+		return false;
+
+	rc = Tss2_MU_TPM2B_OPERAND_Marshal(operand, bp->data, sizeof(*operand), &bp->wpos);
+	if (rc != TSS2_RC_SUCCESS)
+		return false;
+
+	ASN1_INTEGER_set(policy->CommandCode, TPM2_CC_PolicyNV);
+	ASN1_STRING_set(policy->CommandPolicy, bp->data, buffer_available(bp));
+
+	sk_TSSOPTPOLICY_push(policy_seq, policy);
+	return true;
+}
+
+static bool
 __policy_add_policyauthorize(STACK_OF(TSSOPTPOLICY) *policy_seq,
 			     const TPM2B_PUBLIC *pub_key,
 			     const TPMT_SIGNATURE *signature)
@@ -141,11 +173,23 @@ tpm2key_add_policy_policypcr(TSSPRIVKEY *tpm2key, const TPML_PCR_SELECTION *pcr_
 }
 
 bool
+tpm2key_add_policy_policynv (TSSPRIVKEY *tpm2key,
+			     TPM2_HANDLE nvindex,
+			     const TPM2B_OPERAND *operand)
+{
+	if (tpm2key->policy == NULL)
+		tpm2key->policy = sk_TSSOPTPOLICY_new_null();
+	return __policy_add_policynv(tpm2key->policy, nvindex, operand);
+}
+
+bool
 tpm2key_add_authpolicy_policyauthorize(TSSPRIVKEY *tpm2key,
 				       const char *name,
 				       const TPML_PCR_SELECTION *pcr_sel,
 				       const TPM2B_PUBLIC *pub_key,
 				       const TPMT_SIGNATURE *signature,
+				       TPM2_HANDLE nvindex,
+				       const TPM2B_OPERAND *operand,
 				       bool append)
 {
 	TSSAUTHPOLICY *ap = NULL;
@@ -158,6 +202,9 @@ tpm2key_add_authpolicy_policyauthorize(TSSPRIVKEY *tpm2key,
 	ap->policy = sk_TSSOPTPOLICY_new_null();
 
 	ASN1_STRING_set(ap->name, name, strlen (name));
+
+	if (operand && !__policy_add_policynv(ap->policy, nvindex, operand))
+		goto cleanup;
 
 	if (!__policy_add_policypcr(ap->policy, pcr_sel))
 		goto cleanup;

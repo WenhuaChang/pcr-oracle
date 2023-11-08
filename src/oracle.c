@@ -1020,6 +1020,12 @@ main(int argc, char **argv)
 	int systemd_json = false;
 	unsigned int rsa_bits = 2048;
 	int c, exit_code = 0;
+	tpm_pcr_nv_lock_t nv = { 0 };
+
+	/* This will lock the secret to tpm state with NV value 0xaa in index 0x1000001 */
+	nv.index = 0x1000001;
+	nv.operand.size = 1;
+	nv.operand.buffer[0] = 0xaa;
 
 	while ((c = getopt_long(argc, argv, "dhA:CF:LSZ", options, NULL)) != EOF) {
 		switch (c) {
@@ -1320,15 +1326,15 @@ main(int argc, char **argv)
 	} else
 	if (action == ACTION_SEAL) {
 		/* TBD - seal secret against a set of PCR values */
-		if (!pcr_seal_secret(tpm2key_fmt, &pred->prediction, opt_input, opt_output))
+		if (!pcr_seal_secret(tpm2key_fmt, &pred->prediction, opt_input, opt_output, &nv))
 			return 1;
 	} else
 	if (action == ACTION_SIGN) {
 		if (systemd_json) {
-			if (!pcr_policy_sign_systemd(&pred->prediction, opt_rsa_private_key, opt_output))
+			if (!pcr_policy_sign_systemd(&pred->prediction, opt_rsa_private_key, opt_output, &nv))
 				return 1;
 		} else {
-			if (!pcr_policy_sign(tpm2key_fmt, &pred->prediction, opt_rsa_private_key, opt_input, opt_output, opt_policy_name))
+			if (!pcr_policy_sign(tpm2key_fmt, &pred->prediction, opt_rsa_private_key, opt_input, opt_output, opt_policy_name, &nv))
 				return 1;
 		}
 	}

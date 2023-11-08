@@ -18,6 +18,7 @@
  * Written by Olaf Kirch <okir@suse.com>
  */
 
+#include <stdbool.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,7 @@
 #include <tss2_rc.h>
 #include <tss2_mu.h>
 
+#include "tss2_tpm2_types.h"
 #include "util.h"
 #include "runtime.h"
 #include "pcr.h"
@@ -466,7 +468,9 @@ failed:
 }
 
 static bool
-esys_policy_pcr(ESYS_CONTEXT *esys_context, TPML_PCR_SELECTION *pcrSel, TPM2B_DIGEST *pcrDigest, TPM2B_DIGEST **result)
+esys_policy_pcr(ESYS_CONTEXT *esys_context, TPML_PCR_SELECTION *pcrSel, TPM2B_DIGEST *pcrDigest,
+		TPM2_HANDLE nvindex, const TPM2B_OPERAND *operand,
+		TPM2B_DIGEST **result)
 {
 	ESYS_TR session_handle = ESYS_TR_NONE;
 	TPM2_RC rc;
@@ -474,6 +478,23 @@ esys_policy_pcr(ESYS_CONTEXT *esys_context, TPML_PCR_SELECTION *pcrSel, TPM2B_DI
 
 	if (!esys_start_auth_session(esys_context, TPM2_SE_TRIAL, &session_handle))
 		return false;
+
+	if (operand) {
+		ESYS_TR esys_tr_nv_index = ESYS_TR_NONE;
+
+		rc = Esys_TR_FromTPMPublic(esys_context, nvindex, ESYS_TR_NONE,
+			ESYS_TR_NONE, ESYS_TR_NONE, &esys_tr_nv_index);
+		if (!tss_check_error(rc, "Esys_TR_FromTPMPublic failed"))
+			goto cleanup;
+
+		infomsg("esys_tr_nv_index 0x%x\n", esys_tr_nv_index);
+
+		rc = Esys_PolicyNV(esys_context, ESYS_TR_RH_OWNER,
+			esys_tr_nv_index, session_handle, ESYS_TR_PASSWORD,
+			ESYS_TR_NONE, ESYS_TR_NONE, operand, 0, TPM2_EO_EQ);
+		if (!tss_check_error(rc, "Esys_PolicyNV failed"))
+			goto cleanup;
+	}
 
 	rc = Esys_PolicyPCR(esys_context, session_handle, ESYS_TR_NONE,
 			ESYS_TR_NONE, ESYS_TR_NONE, pcrDigest, pcrSel);
@@ -493,11 +514,15 @@ cleanup:
 }
 
 static TPM2B_DIGEST *
-__pcr_policy_make(ESYS_CONTEXT *esys_context, const tpm_pcr_bank_t *bank)
+__pcr_policy_make(ESYS_CONTEXT *esys_context,
+		  const tpm_pcr_bank_t *bank,
+		  const tpm_pcr_nv_lock_t *nv)
 {
 	TPML_PCR_SELECTION pcrSel;
 	TPM2B_DIGEST *pcrDigest = NULL;
 	TPM2B_DIGEST *result = NULL;
+	TPM2_HANDLE index = nv ? nv->index : 0;
+	const TPM2B_OPERAND *operand = nv ? &nv->operand : NULL;
 
 	if (!pcr_bank_to_selection(&pcrSel, bank))
 		return NULL;
@@ -507,7 +532,8 @@ __pcr_policy_make(ESYS_CONTEXT *esys_context, const tpm_pcr_bank_t *bank)
 		return NULL;
 	}
 
-	if (!esys_policy_pcr(esys_context, &pcrSel, pcrDigest, &result))
+	if (!esys_policy_pcr(esys_context, &pcrSel, pcrDigest,
+			index, operand, &result))
 		assert(result == NULL);
 
 	if (pcrDigest)
@@ -631,7 +657,8 @@ esys_create(ESYS_CONTEXT *esys_context,
 static bool
 esys_seal_secret(const bool tpm2key_fmt, ESYS_CONTEXT *esys_context,
 		 TPM2B_DIGEST *policy, const TPML_PCR_SELECTION *pcr_sel,
-		 const char *input_path, const char *output_path)
+		 const char *input_path, const char *output_path,
+		 TPM2_HANDLE nvindex, const TPM2B_OPERAND *operand)
 {
 	TPM2B_SENSITIVE_DATA *secret = NULL;
 	TPM2B_PRIVATE *sealed_private = NULL;
@@ -653,6 +680,9 @@ esys_seal_secret(const bool tpm2key_fmt, ESYS_CONTEXT *esys_context,
 
 	if (tpm2key_fmt) {
 		if (!tpm2key_basekey(&tpm2key, TPM2_RH_OWNER, sealed_public, sealed_private))
+			goto cleanup;
+
+		if (operand && !tpm2key_add_policy_policynv(tpm2key, nvindex, operand))
 			goto cleanup;
 
 		if (pcr_sel && !tpm2key_add_policy_policypcr(tpm2key, pcr_sel))
@@ -885,7 +915,7 @@ __pcr_policy_create_authorized(ESYS_CONTEXT *esys_context, const tpm_pcr_selecti
 	 * interested in. */
 	pcr_bank_initialize(&zero_bank, pcr_selection->pcr_mask, pcr_selection->algo_info);
 	pcr_bank_init_from_zero(&zero_bank);
-	if (!(pcr_policy = __pcr_policy_make(esys_context, &zero_bank)))
+	if (!(pcr_policy = __pcr_policy_make(esys_context, &zero_bank, NULL)))
 		goto out;
 
 	okay = esys_create_authorized_policy(esys_context, pcr_policy, pub_key, ret_digest_p);
@@ -1014,21 +1044,24 @@ cleanup:
 
 bool
 pcr_seal_secret(const bool tpm2key_fmt, const tpm_pcr_bank_t *bank,
-		const char *input_path, const char *output_path)
+		const char *input_path, const char *output_path,
+		const tpm_pcr_nv_lock_t *nv)
 {
 	ESYS_CONTEXT *esys_context = tss_esys_context();
 	TPM2B_DIGEST *pcr_policy = NULL;
 	TPML_PCR_SELECTION pcr_sel;
 	bool ok = false;
+	TPM2_HANDLE index = nv ? nv->index : 0;
+	const TPM2B_OPERAND *operand = nv ? &nv->operand : NULL;
 
-	if (!(pcr_policy = __pcr_policy_make(esys_context, bank)))
+	if (!(pcr_policy = __pcr_policy_make(esys_context, bank, nv)))
 		return false;
 
 	if (!pcr_bank_to_selection(&pcr_sel, bank))
 		return false;
 
 	ok = esys_seal_secret(tpm2key_fmt, esys_context, pcr_policy, &pcr_sel,
-			      input_path, output_path);
+			      input_path, output_path, index, operand);
 
 	free(pcr_policy);
 	return ok;
@@ -1099,7 +1132,7 @@ pcr_authorized_policy_seal_secret(const bool tpm2key_fmt, const char *authpolicy
 		return false;
 
 	ok = esys_seal_secret(tpm2key_fmt, esys_context, authorized_policy, NULL,
-			      input_path, output_path);
+			      input_path, output_path, 0, NULL);
 	free(authorized_policy);
 	return ok;
 }
@@ -1156,7 +1189,8 @@ cleanup:
  */
 bool
 pcr_policy_sign(const bool tpm2key_fmt, const tpm_pcr_bank_t *bank, const char *rsakey_path,
-		const char *input_path, const char *output_path, const char *policy_name)
+		const char *input_path, const char *output_path, const char *policy_name,
+		const tpm_pcr_nv_lock_t *nv)
 {
 	ESYS_CONTEXT *esys_context = tss_esys_context();
 	TPM2B_DIGEST *pcr_policy = NULL;
@@ -1166,6 +1200,8 @@ pcr_policy_sign(const bool tpm2key_fmt, const tpm_pcr_bank_t *bank, const char *
 	TSSPRIVKEY *tpm2key = NULL;
 	TPML_PCR_SELECTION pcr_sel;
 	bool okay = false;
+	TPM2_HANDLE index = nv ? nv->index : 0;
+	const TPM2B_OPERAND *operand = nv ? &nv->operand : NULL;
 
 	if (!(rsa_key = tpm_rsa_key_read_private(rsakey_path)))
 		goto out;
@@ -1181,7 +1217,7 @@ pcr_policy_sign(const bool tpm2key_fmt, const tpm_pcr_bank_t *bank, const char *
 			goto out;
 	}
 
-	if (!(pcr_policy = __pcr_policy_make(esys_context, bank)))
+	if (!(pcr_policy = __pcr_policy_make(esys_context, bank, nv)))
 		goto out;
 
 	if (!__pcr_policy_sign(rsa_key, pcr_policy, &signed_policy))
@@ -1194,7 +1230,9 @@ pcr_policy_sign(const bool tpm2key_fmt, const tpm_pcr_bank_t *bank, const char *
 		/* Prepend the signed policy */
 		if (!tpm2key_add_authpolicy_policyauthorize(tpm2key, policy_name,
 							    &pcr_sel, pub_key,
-							    signed_policy, false))
+							    signed_policy,
+							    index, operand,
+							    false))
 			goto out;
 
 		if (!tpm2key_write_file(output_path, tpm2key))
@@ -1405,10 +1443,63 @@ __pcr_policy_tpm2_policypcr(ESYS_CONTEXT *esys_context, ESYS_TR session_handle, 
 	if (rc != TSS2_RC_SUCCESS)
 		return false;
 
+#if 0
+        ESYS_TR esys_tr_nv_index;
+	TPM2B_OPERAND operand_b = { 0 };
+
+	rc = Esys_TR_FromTPMPublic(esys_context, 0x1000001, ESYS_TR_NONE,
+		ESYS_TR_NONE, ESYS_TR_NONE, &esys_tr_nv_index);
+	if (!tss_check_error(rc, "Esys_TR_FromTPMPublic failed"))
+		return false;
+
+	infomsg("esys_tr_nv_index 0x%x\n", esys_tr_nv_index);
+	operand_b.size = 1;
+	operand_b.buffer[0] = 0xaa;
+
+	rc = Esys_PolicyNV(esys_context, ESYS_TR_RH_OWNER,
+		esys_tr_nv_index, session_handle, ESYS_TR_PASSWORD,
+		ESYS_TR_NONE, ESYS_TR_NONE, &operand_b, 0, TPM2_EO_EQ);
+	if (!tss_check_error(rc, "Esys_PolicyNV failed"))
+		return false;
+#endif
+
 	rc = Esys_PolicyPCR(esys_context, session_handle,
 			ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
 			&digest, &pcrs);
 	if (!tss_check_error(rc, "Esys_PolicyPCR failed"))
+		return false;
+
+	return true;
+}
+
+static bool
+__pcr_policy_tpm2_policynv(ESYS_CONTEXT *esys_context, ESYS_TR session_handle, buffer_t *bp)
+{
+	TPM2_HANDLE tpm_handle; 
+	TPM2B_OPERAND operand = { 0 };
+        ESYS_TR esys_tr_nv_index;
+	TPM2_RC rc;
+
+	rc = Tss2_MU_TPM2_HANDLE_Unmarshal(bp->data, bp->size, &bp->rpos, &tpm_handle);
+	if (rc != TSS2_RC_SUCCESS)
+		return false;
+
+	rc = Tss2_MU_TPM2B_OPERAND_Unmarshal(bp->data, bp->size, &bp->rpos, &operand);
+	if (rc != TSS2_RC_SUCCESS)
+		return false;
+
+	/* Returning internal TPM object by specifying tpm_handle (index) */
+	rc = Esys_TR_FromTPMPublic(esys_context, tpm_handle, ESYS_TR_NONE,
+		ESYS_TR_NONE, ESYS_TR_NONE, &esys_tr_nv_index);
+	if (!tss_check_error(rc, "Esys_TR_FromTPMPublic failed"))
+		return false;
+
+	infomsg("esys_tr_nv_index 0x%x\n", esys_tr_nv_index);
+
+	rc = Esys_PolicyNV(esys_context, ESYS_TR_RH_OWNER,
+		esys_tr_nv_index, session_handle, ESYS_TR_PASSWORD,
+		ESYS_TR_NONE, ESYS_TR_NONE, &operand, 0, TPM2_EO_EQ);
+	if (!tss_check_error(rc, "Esys_PolicyNV failed"))
 		return false;
 
 	return true;
@@ -1439,6 +1530,10 @@ __pcr_policy_unseal_policy_seq(ESYS_CONTEXT *esys_context,
 		code = ASN1_INTEGER_get(policy->CommandCode);
 		buffer_init_read(&buf, policy->CommandPolicy->data, policy->CommandPolicy->length);
 		switch (code) {
+		case TPM2_CC_PolicyNV:
+			if (!__pcr_policy_tpm2_policynv(esys_context, session_handle, &buf))
+				goto cleanup;
+			break;
 		case TPM2_CC_PolicyPCR:
 			if (!__pcr_policy_tpm2_policypcr(esys_context, session_handle, &buf))
 				goto cleanup;
@@ -1546,7 +1641,8 @@ cleanup:
 
 bool
 pcr_policy_sign_systemd(const tpm_pcr_bank_t *bank, const char *rsakey_path,
-			const char *output_path)
+			const char *output_path,
+			const tpm_pcr_nv_lock_t *nv)
 {
 	bool ok = false;
 	FILE *fp = NULL;
@@ -1565,7 +1661,7 @@ pcr_policy_sign_systemd(const tpm_pcr_bank_t *bank, const char *rsakey_path,
 		goto out;
 	digest = tpm_rsa_key_public_digest(rsa_key);
 
-	if (!(pcr_policy = __pcr_policy_make(esys_context, bank)))
+	if (!(pcr_policy = __pcr_policy_make(esys_context, bank, nv)))
 		goto out;
 
 	if (!__pcr_policy_sign(rsa_key, pcr_policy, &signed_policy))

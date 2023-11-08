@@ -39,6 +39,12 @@ typedef struct tpm_pcr_selection {
 	const tpm_algo_info_t *	algo_info;
 } tpm_pcr_selection_t;
 
+#include <tss2_tpm2_types.h>
+typedef struct tpm_pcr_nv_lock {
+	TPM2_HANDLE index;
+	TPM2B_OPERAND operand;
+} tpm_pcr_nv_lock_t;
+
 extern void		set_srk_rsa_bits (const unsigned int rsa_bits);
 extern void		pcr_bank_initialize(tpm_pcr_bank_t *bank, unsigned int pcr_mask, const tpm_algo_info_t *algo);
 extern bool		pcr_bank_wants_pcr(tpm_pcr_bank_t *bank, unsigned int index);
@@ -61,9 +67,11 @@ extern bool		pcr_authorized_policy_create(const tpm_pcr_selection_t *pcr_selecti
 extern bool		pcr_store_public_key(const char *rsakey_path, const char *output_path);
 extern bool		pcr_policy_sign(const bool tpm2key_fmt, const tpm_pcr_bank_t *bank,
 				const char *rsakey_path, const char *input_path,
-				const char *output_path, const char *policy_name);
+				const char *output_path, const char *policy_name,
+				const tpm_pcr_nv_lock_t *nv);
 extern bool		pcr_policy_sign_systemd(const tpm_pcr_bank_t *bank, const char *rsakey_path,
-				const char *output_path);
+				const char *output_path,
+				const tpm_pcr_nv_lock_t *nv);
 extern bool		pcr_authorized_policy_seal_secret(const bool tpm2key_fmt,
 				const char *authorized_policy, const char *input_path,
 				const char *output_path);
@@ -72,7 +80,8 @@ extern bool		pcr_authorized_policy_unseal_secret(const tpm_pcr_selection_t *pcr_
 				const char *rsakey_path,
 				const char *input_path, const char *output_path);
 extern bool		pcr_seal_secret(const bool tpm2key_fmt, const tpm_pcr_bank_t *bank,
-				const char *input_path, const char *output_path);
+				const char *input_path, const char *output_path,
+				const tpm_pcr_nv_lock_t *nv);
 extern bool		pcr_unseal_secret(const tpm_pcr_selection_t *pcr_selection,
 				const char *input_path, const char *output_path);
 extern bool		pcr_policy_unseal_tpm2key(const char *input_path,

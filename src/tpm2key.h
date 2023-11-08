@@ -31,11 +31,17 @@ bool	tpm2key_basekey(TSSPRIVKEY **tpm2key, const TPM2_HANDLE parent,
 bool	tpm2key_add_policy_policypcr(TSSPRIVKEY *tpm2key,
 			const TPML_PCR_SELECTION *pcr_sel);
 
+bool	tpm2key_add_policy_policynv (TSSPRIVKEY *tpm2key,
+			TPM2_HANDLE tpm_handle,
+			const TPM2B_OPERAND *operand);
+
 bool	tpm2key_add_authpolicy_policyauthorize(TSSPRIVKEY *tpm2key,
 			const char *name,
 			const TPML_PCR_SELECTION *pcr_sel,
 			const TPM2B_PUBLIC *pub_key,
 			const TPMT_SIGNATURE *signature,
+			TPM2_HANDLE nvindex,
+			const TPM2B_OPERAND *operand,
 			bool append);
 
 bool	tpm2key_read_file(const char *path, TSSPRIVKEY **tpm2key);
